@@ -1,0 +1,854 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced 3D HUD Interface</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { display: block; }
+        #languageToggle {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(0, 255, 255, 0.2);
+            border: 1px solid rgba(0, 255, 255, 0.5);
+            color: #00ffff;
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        #languageToggle:hover {
+            background: rgba(0, 255, 255, 0.3);
+        }
+    </style>
+</head>
+<body>
+    <button id="languageToggle">日本語</button>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tween.js/18.6.4/tween.umd.js"></script>
+    <script>
+        let scene, camera, renderer, pages = [], raycaster, mouse, clock;
+        let cameraOrbit = { theta: 0, phi: Math.PI / 2, radius: 350 };
+        let expandedView = null;
+        let currentPageIndex = 0;
+        let particles;
+        let hoveredPage = null;
+        let hoverContent = null;
+        let particlePage = null;
+        let isJapanese = false;
+        let isDragging = false;
+        let previousMousePosition = { x: 0, y: 0 };
+
+        function init() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            raycaster = new THREE.Raycaster();
+            mouse = new THREE.Vector2();
+            clock = new THREE.Clock();
+
+            createPages();
+            createBackgroundGrid();
+            createLightEffects();
+            createParticles();
+            createParticlePage();
+
+            window.addEventListener('resize', onWindowResize, false);
+            document.addEventListener('mousemove', onMouseMove, false);
+            document.addEventListener('mousedown', onMouseDown, false);
+            document.addEventListener('mouseup', onMouseUp, false);
+            document.addEventListener('wheel', onMouseWheel, false);
+            document.addEventListener('click', onClick, false);
+            document.addEventListener('keydown', onKeyDown, false);
+
+            document.getElementById('languageToggle').addEventListener('click', toggleLanguage);
+        }
+
+        function createPages() {
+            const totalPages = 50;
+            const a = 250;
+            const b = 187.5;
+            const c = 125;
+            const spiralFactor = 0.2;
+
+            for (let i = 0; i < totalPages; i++) {
+                const t = i / totalPages;
+                const angle = t * Math.PI * 2 * 2;
+
+                const x = a * Math.cos(angle);
+                const y = b * Math.sin(angle);
+                const z = c * Math.sin(angle * 2) + spiralFactor * angle;
+
+                const randomFactor = 5;
+                const randomX = (Math.random() - 0.5) * randomFactor;
+                const randomY = (Math.random() - 0.5) * randomFactor;
+                const randomZ = (Math.random() - 0.5) * randomFactor;
+
+                const page = createHolographicPage(i);
+                page.position.set(x + randomX, y + randomY, z + randomZ);
+
+                page.lookAt(0, 0, 0);
+                page.rotateZ(Math.random() * Math.PI / 24 - Math.PI / 48);
+
+                scene.add(page);
+                pages.push(page);
+            }
+        }
+
+        function createHolographicPage(index) {
+            const group = new THREE.Group();
+
+            const panelGeometry = new THREE.PlaneGeometry(50, 31.25);
+            const panelMaterial = createHolographicMaterial();
+            const panel = new THREE.Mesh(panelGeometry, panelMaterial);
+            group.add(panel);
+
+            const frameGeometry = new THREE.RingGeometry(26.25, 28.125, 6);
+            const frameMaterial = createHolographicMaterial(0x00ffff, 0.8);
+            const frame = new THREE.Mesh(frameGeometry, frameMaterial);
+            group.add(frame);
+
+            addPageContent(group, index);
+
+            return group;
+        }
+
+        function createHolographicMaterial(color = 0x00ffff, opacity = 0.5) {
+            return new THREE.ShaderMaterial({
+                uniforms: {
+                    time: { value: 0 },
+                    color: { value: new THREE.Color(color) },
+                    opacity: { value: opacity }
+                },
+                vertexShader: `
+                    varying vec2 vUv;
+                    void main() {
+                        vUv = uv;
+                        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                    }
+                `,
+                fragmentShader: `
+                    uniform float time;
+                    uniform vec3 color;
+                    uniform float opacity;
+                    varying vec2 vUv;
+
+                    vec3 permute(vec3 x) { return mod(((x*34.0)+1.0)*x, 289.0); }
+
+                    float snoise(vec2 v){
+                        const vec4 C = vec4(0.211324865405187, 0.366025403784439,
+                                -0.577350269189626, 0.024390243902439);
+                        vec2 i  = floor(v + dot(v, C.yy) );
+                        vec2 x0 = v -   i + dot(i, C.xx);
+                        vec2 i1;
+                        i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+                        vec4 x12 = x0.xyxy + C.xxzz;
+                        x12.xy -= i1;
+                        i = mod(i, 289.0);
+                        vec3 p = permute( permute( i.y + vec3(0.0, i1.y, 1.0 ))
+                        + i.x + vec3(0.0, i1.x, 1.0 ));
+                        vec3 m = max(0.5 - vec3(dot(x0,x0), dot(x12.xy,x12.xy),
+                            dot(x12.zw,x12.zw)), 0.0);
+                        m = m*m ;
+                        m = m*m ;
+                        vec3 x = 2.0 * fract(p * C.www) - 1.0;
+                        vec3 h = abs(x) - 0.5;
+                        vec3 ox = floor(x + 0.5);
+                        vec3 a0 = x - ox;
+                        m *= 1.79284291400159 - 0.85373472095314 * ( a0*a0 + h*h );
+                        vec3 g;
+                        g.x  = a0.x  * x0.x  + h.x  * x0.y;
+                        g.yz = a0.yz * x12.xz + h.yz * x12.yw;
+                        return 130.0 * dot(m, g);
+                    }
+
+                    void main() {
+                        float edge = smoothstep(0.0, 0.1, vUv.x) * smoothstep(0.0, 0.1, vUv.y) *
+                                     smoothstep(0.0, 0.1, 1.0 - vUv.x) * smoothstep(0.0, 0.1, 1.0 - vUv.y);
+                        float wave = sin(vUv.y * 20.0 + time * 2.0) * 0.5 + 0.5;
+                        float noise = snoise(vec2(vUv * 10.0 + time * 0.5)) * 0.1;
+                        vec3 rainbowColor = vec3(
+                            sin(time * 0.5 + vUv.x * 10.0) * 0.5 + 0.5,
+                            sin(time * 0.5 + vUv.y * 10.0) * 0.5 + 0.5,
+                            sin(time * 0.5 + (vUv.x + vUv.y) * 10.0) * 0.5 + 0.5
+                        );
+                        vec3 finalColor = mix(color, rainbowColor, wave * 0.3 + noise);
+                        float finalOpacity = opacity * edge;
+                        gl_FragColor = vec4(finalColor, finalOpacity);
+                    }
+                `,
+                transparent: true,
+                side: THREE.DoubleSide
+            });
+        }
+
+        function addPageContent(group, index) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 1024;
+            canvas.height = 640;
+            const ctx = canvas.getContext('2d');
+
+            ctx.fillStyle = 'rgba(0, 255, 255, 0.1)';
+            ctx.fillRect(0, 0, 1024, 640);
+
+            ctx.font = '48px Arial';
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+            ctx.fillText(isJapanese ? `未来のインターフェース創造者 - ページ ${index + 1}` : `Future Interface Creators - Page ${index + 1}`, 20, 60);
+
+            ctx.font = '24px Arial';
+            const content = isJapanese ? [
+                "私たちは、ユーザーインターフェースの未来を",
+                "切り開き、人間とコンピュータの相互作用の",
+                "境界を押し広げています。私たちの使命は、",
+                "人々が技術と対話する方法を変革する直感的で",
+                "没入型の革新的なインターフェースを作ることです。",
+                "",
+                "最先端の研究と革新的なデザインを通じて、",
+                "デジタルと物理的な世界をシームレスに融合する",
+                "インターフェースを開発し、新しい形のコミュニケーション、",
+                "創造性、生産性を可能にしています。",
+                "",
+                "インターフェースが見えなくなり、直感的で",
+                "魔法のようになる未来の技術相互作用を",
+                "形作る私たちの旅に参加してください。"
+            ] : [
+                "We are pioneering the future of user interfaces,",
+                "pushing the boundaries of human-computer interaction.",
+                "Our mission is to create intuitive, immersive, and",
+                "revolutionary interfaces that transform how people",
+                "interact with technology.",
+                "",
+                "Through cutting-edge research and innovative design,",
+                "we're developing interfaces that seamlessly blend",
+                "the digital and physical worlds, enabling new forms",
+                "of communication, creativity, and productivity.",
+                "",
+                "Join us in shaping the future of technology interaction,",
+                "where interfaces become invisible, intuitive, and magical."
+            ];
+
+            content.forEach((line, i) => {
+                ctx.fillText(line, 20, 120 + i * 40);
+            });
+
+            const texture = new THREE.CanvasTexture(canvas);
+            const material = new THREE.MeshBasicMaterial({ map: texture, transparent: true, opacity: 0.9 });
+            const geometry = new THREE.PlaneGeometry(47.5, 29.6875);
+            const contentMesh = new THREE.Mesh(geometry, material);
+            contentMesh.position.z = 0.1;
+            group.add(contentMesh);
+        }
+
+        function createBackgroundGrid() {
+            const geometry = new THREE.BufferGeometry();
+            const vertices = [];
+            const size = 500;
+            const divisions = 50;
+
+            for (let i = -size; i <= size; i += size / divisions) {
+                vertices.push(i, -size, 0, i, size, 0);
+                vertices.push(-size, i, 0, size, i, 0);
+            }
+
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+
+            const material = new THREE.LineBasicMaterial({ color: 0x00ffff, opacity: 0.1, transparent: true });
+            const grid = new THREE.LineSegments(geometry, material);
+            grid.rotation.x = Math.PI / 2;
+            scene.add(grid);
+        }
+
+        function createLightEffects() {
+            const ambientLight = new THREE.AmbientLight(0x404040);
+            scene.add(ambientLight);
+
+            const pointLight = new THREE.PointLight(0x00ffff, 1, 500);
+            pointLight.position.set(0, 0, 250);
+            scene.add(pointLight);
+        }
+
+        function createParticles() {
+            const particlesGeometry = new THREE.BufferGeometry();
+            const particlesCnt = 10000;
+            const posArray = new Float32Array(particlesCnt * 3);
+            
+            for(let i = 0; i < particlesCnt * 3; i++) {
+                posArray[i] = (Math.random() - 0.5) * 1000;
+            }
+            
+            particlesGeometry.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
+            
+            const particlesMaterial = new THREE.PointsMaterial({
+                size: 0.005,
+                color: 0x00ffff,
+                transparent: true,
+                opacity: 0.8,
+                blending: THREE.AdditiveBlending
+            });
+            
+            particles = new THREE.Points(particlesGeometry, particlesMaterial);
+            scene.add(particles);
+        }
+
+        function createParticlePage() {
+            particlePage = new THREE.Group();
+            
+            const planeGeometry = new THREE.PlaneGeometry(200, 150);
+            const planeMaterial = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.5 });
+            const plane = new THREE.Mesh(planeGeometry, planeMaterial);
+            particlePage.add(plane);
+
+            const particlesGeometry = new THREE.BufferGeometry();
+            const particlesCnt = 5000;
+            const posArray = new Float32Array(particlesCnt * 3);
+            
+            for(let i = 0; i < particlesCnt * 3; i++) {
+                posArray[i] = (Math.random() - 0.5) * 200;
+            }
+            
+            particlesGeometry.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
+            
+            const particlesMaterial = new THREE.PointsMaterial({
+                size: 0.01,
+                color: 0x00ffff,
+                transparent: true,
+                opacity: 0.8,
+                blending: THREE.AdditiveBlending
+            });
+            
+            const pageParticles = new THREE.Points(particlesGeometry, particlesMaterial);
+            particlePage.add(pageParticles);
+
+            const canvas = document.createElement('canvas');
+            canvas.width = 1024;
+            canvas.height = 256;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#ffffff';
+            ctx.font = 'bold 48px Arial';
+            ctx.fillText(isJapanese ? 'パーティクル宇宙' : 'Particle Universe', 20, 128);
+
+            const texture = new THREE.CanvasTexture(canvas);
+            const textMaterial = new THREE.MeshBasicMaterial({ map: texture, transparent: true });
+            const textGeometry = new THREE.PlaneGeometry(100, 25);
+            const textMesh = new THREE.Mesh(textGeometry, textMaterial);
+            textMesh.position.set(-50, 60, 1);
+            particlePage.add(textMesh);
+
+            particlePage.position.set(0, 0, -1000);
+            scene.add(particlePage);
+        }
+
+        function onClick(event) {
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(pages, true);
+
+            if (intersects.length > 0) {
+                const clickedPage = intersects[0].object.parent;
+                currentPageIndex = pages.indexOf(clickedPage);
+                if (expandedView) {
+                    closeExpandedView();
+                } else {
+                    openExpandedView(clickedPage);
+                }
+            } else if (!expandedView) {
+                moveToParticlePage();
+            }
+        }
+
+        function openExpandedView(page) {
+            expandedView = new THREE.Group();
+            
+            const planeGeometry = new THREE.PlaneGeometry(300, 200);
+            const planeMaterial = createHolographicMaterial(0x00ffff, 0.8);
+            const plane = new THREE.Mesh(planeGeometry, planeMaterial);
+            expandedView.add(plane);
+
+            const content = createExpandedContent(currentPageIndex);
+            content.position.z = 0.1;
+            content.scale.set(1.5, 1.5, 1.5);
+            expandedView.add(content);
+
+            const hudElements = create3DHUDElements();
+            hudElements.position.z = 10;
+            expandedView.add(hudElements);
+
+            expandedView.position.set(0, 0, 300);
+            expandedView.rotation.set(-Math.PI / 4, 0, 0);
+            expandedView.scale.set(0.1, 0.1, 0.1);
+            scene.add(expandedView);
+
+            new TWEEN.Tween(expandedView.position)
+                .to({ z: 0 }, 1000)
+                .easing(TWEEN.Easing.Exponential.Out)
+                .start();
+
+            new TWEEN.Tween(expandedView.rotation)
+                .to({ x: 0 }, 1000)
+                .easing(TWEEN.Easing.Exponential.Out)
+                .start();
+
+            new TWEEN.Tween(expandedView.scale)
+                .to({ x: 1, y: 1, z: 1 }, 1000)
+                .easing(TWEEN.Easing.Exponential.Out)
+                .start();
+
+            cameraOrbit.radius = 200;
+        }
+
+        function create3DHUDElements() {
+            const hudGroup = new THREE.Group();
+
+            const circularGraph = createCircularGraph();
+            circularGraph.position.set(-100, 70, 0);
+            circularGraph.scale.set(2, 2, 2);
+            hudGroup.add(circularGraph);
+
+            const infoPanel = createInfoPanel();
+            infoPanel.position.set(100, 70, 0);
+            infoPanel.scale.set(2, 2, 2);
+            hudGroup.add(infoPanel);
+
+            const interactiveButton = createInteractiveButton();
+            interactiveButton.position.set(0, -80, 0);
+            interactiveButton.scale.set(2, 2, 2);
+            hudGroup.add(interactiveButton);
+
+            return hudGroup;
+        }
+
+        function createCircularGraph() {
+            const group = new THREE.Group();
+            const segments = 64;
+            const radius = 15;
+
+            const bgGeometry = new THREE.CircleGeometry(radius, segments);
+            const bgMaterial = new THREE.MeshBasicMaterial({ color: 0x001a33, transparent: true, opacity: 0.5 });
+            const bgCircle = new THREE.Mesh(bgGeometry, bgMaterial);
+            group.add(bgCircle);
+
+            const dataGeometry = new THREE.RingGeometry(radius * 0.7, radius, segments);
+            const dataMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff00, side: THREE.DoubleSide, transparent: true, opacity: 0.8 });
+            const dataRing = new THREE.Mesh(dataGeometry, dataMaterial);
+            dataRing.rotation.z = Math.PI;
+            group.add(dataRing);
+
+            const tween = new TWEEN.Tween({ value: 0 })
+                .to({ value: 1 }, 2000)
+                .easing(TWEEN.Easing.Cubic.Out)
+                .onUpdate(function(obj) {
+                    dataRing.scale.y = obj.value;
+                })
+                .repeat(Infinity)
+                .yoyo(true)
+                .start();
+
+            group.userData.interactive = true;
+            group.userData.onHover = function() {
+                bgCircle.material.color.setHex(0x002a53);
+            };
+            group.userData.onLeave = function() {
+                bgCircle.material.color.setHex(0x001a33);
+            };
+            group.userData.onClick = function() {
+                console.log(isJapanese ? "グラフがクリックされました" : "Graph clicked");
+            };
+
+            return group;
+        }
+
+        function createInfoPanel() {
+            const group = new THREE.Group();
+
+            const panelGeometry = new THREE.PlaneGeometry(40, 30);
+            const panelMaterial = new THREE.MeshBasicMaterial({ color: 0x001a33, transparent: true, opacity: 0.5 });
+            const panel = new THREE.Mesh(panelGeometry, panelMaterial);
+            group.add(panel);
+
+            const canvas = document.createElement('canvas');
+            canvas.width = 400;
+            canvas.height = 300;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#00ffff';
+            ctx.font = '24px Arial';
+            ctx.fillText(isJapanese ? 'システム状態: 正常' : 'System Status: Normal', 20, 40);
+            ctx.fillText(isJapanese ? 'パフォーマンス: 95%' : 'Performance: 95%', 20, 80);
+            ctx.fillText(isJapanese ? 'ユーザー数: 1,234' : 'Users: 1,234', 20, 120);
+
+            const texture = new THREE.CanvasTexture(canvas);
+            const textMaterial = new THREE.MeshBasicMaterial({ map: texture, transparent: true });
+            const textGeometry = new THREE.PlaneGeometry(40, 30);
+            const textMesh = new THREE.Mesh(textGeometry, textMaterial);
+            textMesh.position.z = 0.1;
+            group.add(textMesh);
+
+            group.userData.interactive = true;
+            group.userData.onHover = function() {
+                panel.material.opacity = 0.8;
+            };
+            group.userData.onLeave = function() {
+                panel.material.opacity = 0.5;
+            };
+            group.userData.onClick = function() {
+                console.log(isJapanese ? "情報パネルがクリックされました" : "Info panel clicked");
+            };
+
+            return group;
+        }
+
+        function createInteractiveButton() {
+            const group = new THREE.Group();
+
+            const buttonGeometry = new THREE.BoxGeometry(20, 10, 2);
+            const buttonMaterial = new THREE.MeshPhongMaterial({ color: 0x0066cc });
+            const button = new THREE.Mesh(buttonGeometry, buttonMaterial);
+            group.add(button);
+
+            const canvas = document.createElement('canvas');
+            canvas.width = 200;
+            canvas.height = 100;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#ffffff';
+            ctx.font = 'bold 36px Arial';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(isJapanese ? '詳細' : 'Details', 100, 50);
+
+            const texture = new THREE.CanvasTexture(canvas);
+            const textMaterial = new THREE.MeshBasicMaterial({ map: texture, transparent: true });
+            const textGeometry = new THREE.PlaneGeometry(20, 10);
+            const textMesh = new THREE.Mesh(textGeometry, textMaterial);
+            textMesh.position.z = 1.1;
+            group.add(textMesh);
+
+            group.userData.interactive = true;
+            group.userData.onHover = function() {
+                button.material.color.setHex(0x0088ff);
+            };
+            group.userData.onLeave = function() {
+                button.material.color.setHex(0x0066cc);
+            };
+            group.userData.onClick = function() {
+                console.log(isJapanese ? "詳細ボタンがクリックされました" : "Details button clicked");
+            };
+
+            return group;
+        }
+
+        function createExpandedContent(index) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 2048;
+            canvas.height = 1536;
+            const ctx = canvas.getContext('2d');
+
+            ctx.fillStyle = 'rgba(0, 255, 255, 0.1)';
+            ctx.fillRect(0, 0, 2048, 1536);
+
+            const gradient = ctx.createRadialGradient(1024, 768, 0, 1024, 768, 1024);
+            gradient.addColorStop(0, 'rgba(0, 255, 255, 0.2)');
+            gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, 2048, 1536);
+
+            ctx.font = 'bold 96px Arial';
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+            ctx.textAlign = 'center';
+            ctx.fillText(isJapanese ? `未来のインターフェース創造者 - ページ ${index + 1}` : `Future Interface Creators - Page ${index + 1}`, 1024, 120);
+
+            ctx.font = '48px Arial';
+            ctx.textAlign = 'left';
+            const content = isJapanese ? [
+                "私たちは、ユーザーインターフェースの未来を切り開き、",
+                "人間とコンピュータの相互作用の境界を押し広げています。",
+                "私たちの使命は、人々が技術と対話する方法を変革する",
+                "直感的で没入型の革新的なインターフェースを作ることです。",
+                "",
+                "最先端の研究と革新的なデザインを通じて、デジタルと",
+                "物理的な世界をシームレスに融合するインターフェースを",
+                "開発し、新しい形のコミュニケーション、創造性、生産性を",
+                "可能にしています。",
+                "",
+                "インターフェースが見えなくなり、直感的で魔法のようになる",
+                "未来の技術相互作用を形作る私たちの旅に参加してください。",
+                "",
+                "私たちは未来を予測するだけでなく、一つのインターフェースずつ、",
+                "その未来を創造しているのです。"
+            ] : [
+                "We are pioneering the future of user interfaces,",
+                "pushing the boundaries of human-computer interaction.",
+                "Our mission is to create intuitive, immersive, and",
+                "revolutionary interfaces that transform how people",
+                "interact with technology.",
+                "",
+                "Through cutting-edge research and innovative design,",
+                "we're developing interfaces that seamlessly blend",
+                "the digital and physical worlds, enabling new forms",
+                "of communication, creativity, and productivity.",
+                "",
+                "Join us in shaping the future of technology interaction,",
+                "where interfaces become invisible, intuitive, and magical.",
+                "",
+                "Together, we're not just predicting the future;",
+                "we're creating it, one interface at a time."
+            ];
+
+            content.forEach((line, i) => {
+                ctx.fillText(line, 40, 240 + i * 60);
+            });
+
+            ctx.strokeStyle = 'rgba(0, 255, 255, 0.5)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(20, 180);
+            ctx.lineTo(2028, 180);
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.arc(1024, 768, 600, 0, Math.PI * 2);
+            ctx.stroke();
+
+            const texture = new THREE.CanvasTexture(canvas);
+            const material = new THREE.MeshBasicMaterial({ map: texture, transparent: true, opacity: 1 });
+            const geometry = new THREE.PlaneGeometry(175.5, 131.625);
+            return new THREE.Mesh(geometry, material);
+        }
+
+        function closeExpandedView() {
+            if (!expandedView) return;
+
+            new TWEEN.Tween(expandedView.position)
+                .to({ z: 300 }, 1000)
+                .easing(TWEEN.Easing.Exponential.In)
+                .start();
+
+            new TWEEN.Tween(expandedView.rotation)
+                .to({ x: -Math.PI / 4 }, 1000)
+                .easing(TWEEN.Easing.Exponential.In)
+                .start();
+
+            new TWEEN.Tween(expandedView.scale)
+                .to({ x: 0.1, y: 0.1, z: 0.1 }, 1000)
+                .easing(TWEEN.Easing.Exponential.In)
+                .onComplete(() => {
+                    scene.remove(expandedView);
+                    expandedView = null;
+                })
+                .start();
+
+            cameraOrbit.radius = 350;
+        }
+
+        function moveToParticlePage() {
+            new TWEEN.Tween(particlePage.position)
+                .to({ z: 0 }, 1000)
+                .easing(TWEEN.Easing.Exponential.Out)
+                .start();
+
+            new TWEEN.Tween(cameraOrbit)
+                .to({ radius: 150 }, 1000)
+                .easing(TWEEN.Easing.Exponential.Out)
+                .start();
+        }
+
+        function onKeyDown(event) {
+            if (expandedView) {
+                if (event.key === 'ArrowRight') {
+                    navigateToPage(currentPageIndex + 1);
+                } else if (event.key === 'ArrowLeft') {
+                    navigateToPage(currentPageIndex - 1);
+                } else if (event.key === 'Escape') {
+                    closeExpandedView();
+                }
+            } else if (particlePage.position.z === 0 && event.key === 'Escape') {
+                returnFromParticlePage();
+            }
+        }
+
+        function navigateToPage(newIndex) {
+            if (newIndex < 0 || newIndex >= pages.length) return;
+
+            currentPageIndex = newIndex;
+            const newContent = createExpandedContent(currentPageIndex);
+            newContent.position.z = 0.1;
+            newContent.scale.set(1.5, 1.5, 1.5);
+
+            new TWEEN.Tween(expandedView.children[1].position)
+                .to({ x: -200 }, 500)
+                .easing(TWEEN.Easing.Quadratic.In)
+                .onComplete(() => {
+                    expandedView.remove(expandedView.children[1]);
+                    newContent.position.x = 200;
+                    expandedView.add(newContent);
+
+                    new TWEEN.Tween(newContent.position)
+                        .to({ x: 0 }, 500)
+                        .easing(TWEEN.Easing.Quadratic.Out)
+                        .start();
+                })
+                .start();
+        }
+
+        function returnFromParticlePage() {
+            new TWEEN.Tween(particlePage.position)
+                .to({ z: -1000 }, 1000)
+                .easing(TWEEN.Easing.Exponential.In)
+                .start();
+
+            new TWEEN.Tween(cameraOrbit)
+                .to({ radius: 350 }, 1000)
+                .easing(TWEEN.Easing.Exponential.In)
+                .start();
+        }
+
+        function onMouseMove(event) {
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            if (isDragging && !expandedView) {
+                const deltaMove = {
+                    x: event.clientX - previousMousePosition.x,
+                    y: event.clientY - previousMousePosition.y
+                };
+
+                cameraOrbit.theta -= deltaMove.x * 0.005;
+                cameraOrbit.phi -= deltaMove.y * 0.005;
+
+                cameraOrbit.phi = Math.min(Math.max(cameraOrbit.phi, 0.1), Math.PI - 0.1);
+
+                previousMousePosition = { x: event.clientX, y: event.clientY };
+            }
+
+            if (expandedView) {
+                raycaster.setFromCamera(mouse, camera);
+                const intersects = raycaster.intersectObjects(expandedView.children, true);
+
+                intersects.forEach(intersect => {
+                    const object = intersect.object;
+                    if (object.parent && object.parent.userData && object.parent.userData.interactive) {
+                        if (object.parent.userData.onHover) {
+                            object.parent.userData.onHover();
+                        }
+                    }
+                });
+            }
+        }
+
+        function onMouseDown(event) {
+            isDragging = true;
+            previousMousePosition = { x: event.clientX, y: event.clientY };
+
+            if (expandedView) {
+                raycaster.setFromCamera(mouse, camera);
+                const intersects = raycaster.intersectObjects(expandedView.children, true);
+
+                intersects.forEach(intersect => {
+                    const object = intersect.object;
+                    if (object.parent && object.parent.userData && object.parent.userData.interactive) {
+                        if (object.parent.userData.onClick) {
+                            object.parent.userData.onClick();
+                        }
+                    }
+                });
+            }
+        }
+
+        function onMouseUp() {
+            isDragging = false;
+        }
+
+        function onMouseWheel(event) {
+            if (expandedView) return;
+            const zoomSpeed = 0.1;
+            cameraOrbit.radius += event.deltaY * zoomSpeed;
+            cameraOrbit.radius = Math.max(250, Math.min(cameraOrbit.radius, 450));
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const elapsedTime = clock.getElapsedTime();
+            pages.forEach(page => {
+                page.children.forEach(child => {
+                    if (child.material && child.material.uniforms) {
+                        child.material.uniforms.time.value = elapsedTime;
+                    }
+                });
+                if (!expandedView) {
+                    page.rotation.y += 0.001;
+                    const lookAtVector = new THREE.Vector3(0, 0, 0).sub(page.position);
+                    const rotationMatrix = new THREE.Matrix4().lookAt(lookAtVector, new THREE.Vector3(0, 1, 0), page.up);
+                    page.quaternion.setFromRotationMatrix(rotationMatrix);
+                }
+            });
+
+            if (expandedView) {
+                expandedView.children.forEach(child => {
+                    if (child.material && child.material.uniforms) {
+                        child.material.uniforms.time.value = elapsedTime;
+                    }
+                });
+                expandedView.quaternion.copy(camera.quaternion);
+            }
+
+            if (particlePage.position.z === 0) {
+                particlePage.children[1].rotation.y += 0.001;
+            }
+
+            if (!expandedView) {
+                camera.position.x = cameraOrbit.radius * Math.sin(cameraOrbit.phi) * Math.cos(cameraOrbit.theta);
+                camera.position.y = cameraOrbit.radius * Math.cos(cameraOrbit.phi);
+                camera.position.z = cameraOrbit.radius * Math.sin(cameraOrbit.phi) * Math.sin(cameraOrbit.theta);
+                camera.lookAt(scene.position);
+            }
+
+            particles.rotation.x += 0.0001;
+            particles.rotation.y += 0.0001;
+
+            TWEEN.update();
+            renderer.render(scene, camera);
+        }
+
+        function toggleLanguage() {
+            isJapanese = !isJapanese;
+            document.getElementById('languageToggle').textContent = isJapanese ? 'English' : '日本語';
+            
+            pages.forEach((page, index) => {
+                addPageContent(page, index);
+            });
+
+            if (expandedView) {
+                const newContent = createExpandedContent(currentPageIndex);
+                newContent.position.z = 0.1;
+                newContent.scale.set(1.5, 1.5, 1.5);
+                expandedView.remove(expandedView.children[1]);
+                expandedView.add(newContent);
+            }
+
+            const canvas = document.createElement('canvas');
+            canvas.width = 1024;
+            canvas.height = 256;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#ffffff';
+            ctx.font = 'bold 48px Arial';
+            ctx.fillText(isJapanese ? 'パーティクル宇宙' : 'Particle Universe', 20, 128);
+
+            const texture = new THREE.CanvasTexture(canvas);
+            particlePage.children[2].material.map = texture;
+            particlePage.children[2].material.needsUpdate = true;
+        }
+
+        init();
+        animate();
+    </script>
+</body>
+</html>                
